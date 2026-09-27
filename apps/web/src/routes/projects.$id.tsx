@@ -1,7 +1,13 @@
 import { ProjectBoard } from '@/components/board/project-board'
-import { createFileRoute } from '@tanstack/react-router'
+import { useAppStore } from '@/store'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
 export const Route = createFileRoute('/projects/$id')({
+  beforeLoad: ({ location }) => {
+    if (useAppStore.getState().authStatus === 'unauthenticated') {
+      throw redirect({ to: '/login', search: { redirect: location.href } })
+    }
+  },
   component: RouteComponent,
 })
 

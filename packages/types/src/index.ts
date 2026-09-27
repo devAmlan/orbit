@@ -60,6 +60,28 @@ export const SSEEventSchema = z.discriminatedUnion("event", [
   }),
 ]);
 
+export const SignupSchema = z.object({
+  name: z.string().min(1).max(80),
+  email: z.string().email(),
+  password: z.string().min(8).max(200),
+});
+
+export const LoginSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(1),
+  remember: z.boolean().optional(),
+});
+
+export const UserSchema = z.object({
+  id: z.string(),
+  email: z.string().email(),
+  name: z.string(),
+});
+
+export type Signup = z.infer<typeof SignupSchema>;
+export type Login = z.infer<typeof LoginSchema>;
+export type User = z.infer<typeof UserSchema>;
+
 export type StateGroup = z.infer<typeof StateGroupSchema>;
 export type State = z.infer<typeof StateSchema>;
 export type Priority = z.infer<typeof PrioritySchema>;

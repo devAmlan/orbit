@@ -1,12 +1,14 @@
 import * as React from "react"
+import { useNavigate } from "@tanstack/react-router"
 import { AnimatePresence, motion } from "framer-motion"
-import { CheckIcon, EyeIcon, EyeOffIcon } from "lucide-react"
+import { EyeIcon, EyeOffIcon, Loader2Icon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { ApiError } from "@/services/api"
+import { useAppStore } from "@/store"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { MotionButton } from "@/components/motion/motion-button"
-import { ActionSwapButton } from "@/components/motion/action-swap-button"
 import { Checkbox } from "@/components/motion/motion-checkbox"
 
 const EMAIL_RE = /^\S+@\S+\.\S+$/
@@ -99,14 +101,40 @@ function AnimatedInput({
 export type SignupCardProps = React.ComponentProps<"div">
 
 function SignupCard({ className, ...props }: SignupCardProps) {
+  const navigate = useNavigate()
+  const signup = useAppStore((s) => s.signup)
   const [name, setName] = React.useState("")
   const [email, setEmail] = React.useState("")
   const [password, setPassword] = React.useState("")
   const [showPassword, setShowPassword] = React.useState(false)
   const [agreed, setAgreed] = React.useState<boolean | "indeterminate">(false)
+  const [emailError, setEmailError] = React.useState<string | null>(null)
+  const [formError, setFormError] = React.useState<string | null>(null)
+  const [submitting, setSubmitting] = React.useState(false)
 
   const score = getPasswordScore(password)
   const isValid = name.trim().length > 0 && EMAIL_RE.test(email) && password.length >= 8 && agreed === true
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!isValid || submitting) return
+
+    setSubmitting(true)
+    setEmailError(null)
+    setFormError(null)
+    try {
+      await signup({ name: name.trim(), email, password })
+      navigate({ to: "/dashboard" })
+    } catch (err) {
+      if (err instanceof ApiError && err.code === "EMAIL_TAKEN") {
+        setEmailError(err.message)
+      } else {
+        setFormError(err instanceof ApiError ? err.message : "Something went wrong. Try again.")
+      }
+    } finally {
+      setSubmitting(false)
+    }
+  }
 
   return (
     <div
@@ -136,10 +164,7 @@ function SignupCard({ className, ...props }: SignupCardProps) {
         <span className="h-px flex-1 bg-border" />
       </div>
 
-      <form
-        className="space-y-4"
-        onSubmit={(e) => e.preventDefault()}
-      >
+      <form className="space-y-4" onSubmit={handleSubmit}>
         <div className="grid gap-2">
           <Label htmlFor="signup-name">Name</Label>
           <AnimatedInput
@@ -156,9 +181,13 @@ function SignupCard({ className, ...props }: SignupCardProps) {
             id="signup-email"
             type="email"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              setEmailError(null)
+            }}
             placeholder="ava@morphui.dev"
           />
+          {emailError && <p className="text-sm text-destructive">{emailError}</p>}
         </div>
 
         <div className="grid gap-2">
@@ -236,15 +265,29 @@ function SignupCard({ className, ...props }: SignupCardProps) {
           </label>
         </div>
 
-        <ActionSwapButton
-          mode="pulse"
-          idleLabel="Create account"
-          activeLabel="Account created!"
-          activeIcon={<CheckIcon className="size-4" />}
-          resetAfter={1600}
-          disabled={!isValid}
-          className="w-full"
-        />
+        <AnimatePresence initial={false}>
+          {formError && (
+            <motion.p
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              className="overflow-hidden text-sm text-destructive"
+            >
+              {formError}
+            </motion.p>
+          )}
+        </AnimatePresence>
+
+        <MotionButton type="submit" disabled={!isValid || submitting} className="w-full">
+          {submitting ? (
+            <span className="inline-flex items-center gap-1.5">
+              <Loader2Icon className="size-4 animate-spin" />
+              Creating account…
+            </span>
+          ) : (
+            "Create account"
+          )}
+        </MotionButton>
       </form>
 
       <p className="mt-5 text-center text-sm text-muted-foreground">
