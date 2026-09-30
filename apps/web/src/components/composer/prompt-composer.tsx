@@ -1,6 +1,10 @@
 import * as React from "react";
 import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui";
 import { AnimatePresence, motion } from "framer-motion";
+import { useNavigate } from "@tanstack/react-router";
+import { BoardSchema } from "@orbit/types";
+import { generateBoard } from "@/services/ai";
+import { useAppStore } from "@/store";
 import {
 	ArrowUpIcon,
 	CheckIcon,
@@ -376,12 +380,20 @@ function PromptComposer({ className, ...props }: PromptComposerProps) {
 	const [recording, setRecording] = React.useState(false);
 	const [contextItems, setContextItems] = React.useState<ContextItem[]>([]);
 	const [status, setStatus] = React.useState<"idle" | "streaming">("idle");
+	const [error, setError] = React.useState<string | null>(null);
 
 	const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = React.useRef<HTMLInputElement>(null);
 	const nextId = React.useRef(0);
 	const recordTimeoutRef =
 		React.useRef<ReturnType<typeof setTimeout>>(undefined);
+	const abortRef = React.useRef<AbortController | null>(null);
+	const navigate = useNavigate();
+	const draftStart = useAppStore((s) => s.start);
+	const draftCancel = useAppStore((s) => s.cancel);
+	const draftCommit = useAppStore((s) => s.commit);
+	const createBoard = useAppStore((s) => s.create);
+	const addItem = useAppStore((s) => s.add);
 
 	React.useEffect(() => {
 		const el = textareaRef.current;
@@ -414,17 +426,45 @@ function PromptComposer({ className, ...props }: PromptComposerProps) {
 		}, RECORD_MS);
 	}
 
-	function handleSend() {
+	async function handleSend() {
 		if (status === "streaming") {
+			abortRef.current?.abort();
+			draftCancel();
 			setStatus("idle");
 			return;
 		}
 		if (!text.trim()) return;
+
+		setError(null);
 		setStatus("streaming");
-		window.setTimeout(() => {
-			setStatus("idle");
+		draftStart();
+		const controller = new AbortController();
+		abortRef.current = controller;
+		const id = crypto.randomUUID();
+		let buffer = "";
+
+		try {
+			for await (const event of generateBoard(text, controller.signal)) {
+				if (event.event === "delta") buffer += event.data.json;
+				else if (event.event === "error") throw new Error(event.data.message);
+			}
+			const board = BoardSchema.parse(JSON.parse(buffer));
+			createBoard(
+				{ id, projectName: board.projectName, summary: board.summary, updatedAt: Date.now() },
+				board.states,
+			);
+			for (const item of board.items) addItem(item);
+			draftCommit();
 			setText("");
-		}, 1600);
+			navigate({ to: "/projects/$id", params: { id } });
+		} catch (err) {
+			if (!controller.signal.aborted) {
+				setError(err instanceof Error ? err.message : "Something went wrong");
+				draftCancel();
+			}
+		} finally {
+			setStatus("idle");
+		}
 	}
 
 	return (
@@ -619,6 +659,8 @@ function PromptComposer({ className, ...props }: PromptComposerProps) {
 					</div>
 				</div>
 			</div>
+
+			{error && <p className="text-center text-sm text-destructive">{error}</p>}
 
 			{!text && (
 				<div className="flex flex-wrap justify-center gap-2">

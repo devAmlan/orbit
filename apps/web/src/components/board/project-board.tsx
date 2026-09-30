@@ -1,5 +1,5 @@
 import { useRef, useState } from "react"
-import type { Priority, State, StateGroup, WorkItem } from "@orbit/types"
+import type { Change, Priority, State, StateGroup, WorkItem } from "@orbit/types"
 import {
   AlignLeft,
   ArrowLeft,
@@ -28,6 +28,7 @@ import {
 
 import { KanbanBoard, KanbanCard, KanbanCards, KanbanHeader, KanbanProvider } from "@/components/kibo-ui/kanban"
 import { DescriptionEditor } from "@/components/editor/description-editor"
+import { FollowUpChat } from "@/components/board/follow-up-chat"
 import { WorkItemActivity, type ActivityEntry } from "@/components/board/work-item-activity"
 import { IconTransition } from "@/components/motion/icon-transition"
 import { MotionCalendar } from "@/components/motion/motion-calendar"
@@ -37,6 +38,7 @@ import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Sheet, SheetContent } from "@/components/ui/sheet"
 import { cn } from "@/lib/utils"
+import { useAppStore } from "@/store"
 
 const STATE_GROUP_ORDER: StateGroup[] = ["backlog", "unstarted", "started", "completed"]
 
@@ -95,7 +97,7 @@ type BoardItem = WorkItem & {
   activity: ActivityEntry[]
 }
 
-const MOCK_ITEMS: Omit<BoardItem, "name" | "column" | "code">[] = [
+const MOCK_ITEMS: Omit<BoardItem, "name" | "column" | "code" | "activity">[] = [
   {
     id: "1",
     title: "Set up authentication API",
@@ -393,26 +395,78 @@ export type ProjectBoardProps = {
   id: string
 }
 
-// ponytail: states/items are hardcoded until /generate + the store are wired up; swap for useAppStore once the backend exists.
 function ProjectBoard({ id }: ProjectBoardProps) {
-  const columns = [...MOCK_STATES]
+  const activeBoardId = useAppStore((s) => s.activeBoardId)
+  const storeStates = useAppStore((s) => s.states)
+  const storeItemsById = useAppStore((s) => s.byId)
+  const isGenerated = activeBoardId === id && storeStates.length > 0
+
+  const boardStates = isGenerated ? storeStates : MOCK_STATES
+  const columns = [...boardStates]
     .sort((a, b) => STATE_GROUP_ORDER.indexOf(a.group) - STATE_GROUP_ORDER.indexOf(b.group))
     .map((state) => ({ id: state.id, name: state.name, colorClassName: STATE_GROUP_COLOR[state.group] }))
 
   const projectCode = (id.replace(/[^a-zA-Z0-9]/g, "").slice(0, 4) || "TASK").toUpperCase()
   const stateNameById = Object.fromEntries(columns.map((c) => [c.id, c.name]))
 
-  const [items, setItems] = useState<BoardItem[]>(() =>
-    MOCK_ITEMS.map((item, index) => ({
+  // ponytail: generated WorkItems have no dates/assignee/activity — synthesized here until the AI schema or a real backend adds them.
+  const [items, setItems] = useState<BoardItem[]>(() => {
+    const source: (WorkItem | Omit<BoardItem, "name" | "column" | "code" | "activity">)[] = isGenerated
+      ? Object.values(storeItemsById)
+      : MOCK_ITEMS
+    return source.map((item, index) => ({
+      startAt: today,
+      endAt: daysFromNow(item.estimate ?? 3),
       ...item,
       name: item.title,
       column: item.stateId,
       code: `${projectCode}-${index + 1}`,
       activity: [],
-    })),
-  )
+    }))
+  })
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const selectedItem = items.find((item) => item.id === selectedItemId) ?? null
+
+  const [chatOpen, setChatOpen] = useState(false)
+
+  // ponytail: changes only ever land in local `items` state, same as every other edit on this board.
+  function applyProposedChanges(changes: Change[]) {
+    setItems((prev) => {
+      let next = prev
+      for (const change of changes) {
+        if (change.op === "add" && change.item) {
+          const item = change.item
+          next = [
+            ...next,
+            {
+              ...item,
+              name: item.title,
+              column: item.stateId,
+              code: `${projectCode}-${next.length + 1}`,
+              startAt: today,
+              endAt: daysFromNow(item.estimate ?? 3),
+              activity: [],
+            },
+          ]
+        } else if (change.op === "update" && change.itemId && change.patch) {
+          const patch = change.patch
+          next = next.map((existing) =>
+            existing.id === change.itemId
+              ? { ...existing, ...patch, name: patch.title ?? existing.name, column: patch.stateId ?? existing.column }
+              : existing,
+          )
+        } else if (change.op === "move" && change.itemId && change.toStateId) {
+          const toStateId = change.toStateId
+          next = next.map((existing) =>
+            existing.id === change.itemId ? { ...existing, stateId: toStateId, column: toStateId } : existing,
+          )
+        } else if (change.op === "delete" && change.itemId) {
+          next = next.filter((existing) => existing.id !== change.itemId)
+        }
+      }
+      return next
+    })
+  }
 
   // ponytail: simulated — patches only ever land in local state, there's no backend to persist to yet.
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved">("idle")
@@ -581,9 +635,15 @@ function ProjectBoard({ id }: ProjectBoardProps) {
 
   return (
     <div className="w-full space-y-6">
-      <div>
-        <p className="text-sm text-muted-foreground">Project</p>
-        <h1 className="text-2xl font-semibold tracking-tight">{id}</h1>
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm text-muted-foreground">Project</p>
+          <h1 className="text-2xl font-semibold tracking-tight">{id}</h1>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => setChatOpen(true)}>
+          <MessageSquare className="size-4" />
+          Ask AI
+        </Button>
       </div>
 
       <div className="h-[calc(100vh-12rem)] min-h-[420px]">
@@ -770,6 +830,12 @@ function ProjectBoard({ id }: ProjectBoardProps) {
               </ScrollArea>
             </>
           )}
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={chatOpen} onOpenChange={setChatOpen}>
+        <SheetContent className="p-0">
+          <FollowUpChat states={boardStates} items={items} onApply={applyProposedChanges} />
         </SheetContent>
       </Sheet>
     </div>
